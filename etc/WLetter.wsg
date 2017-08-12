@@ -1,0 +1,629 @@
+## パラメータ
+@define MRLen   65535  # 最大の連長(現在不使用)
+@define PCSiz   20000  # 一次チャンクの最大サイズ
+@define CSp     "20    # 「空白」の文字コード
+@define CTb     "09    # 「タブ」の文字コード
+@define CLf     "0A    # 「改行」の文字コード
+## 変数
+  # chartype テーブル
+@define ACTTbl  "200   # chartype テーブル
+  # 文字カウントテーブル
+@define ACCod   "400   # 文字
+@define ACCnt   "500   # カウント
+  # 文字インデクステーブル
+@define ACIdx   "600   # インデクス
+  # 一次チャンクテーブル
+@define AText   "10000 # 文字
+@define ARLen   "20000 # 連長
+  # その他グローバル
+@define ASize   "10    # 一次チャンクのサイズ
+@define AUnget  "11    # 一次チャンク後の直後の文字
+@define ATerm   "2FFFF
+  # ローカル使用
+@define AK      "1
+@define AJ      "2
+@define AIdx    "3
+@define ACsr    "4
+@define APrev   "5
+@define AIn     "6
+@define AG      "1
+@define AOk     "2
+
+##-------- メイン
+
+        #[ ] 初期化
+        CAL$InitSystem
+        #[ ] 一次チャンクを読む
+        CAL$ReadPrimary
+
+        #[ ] 空ファイルの対処: if Size = 0 goto 12
+        $ASize LOD JZR12
+
+        #[ ] 文字カウント、インデクス作成
+        CAL$CountChar
+        CAL$SortCount
+        CAL$MakeIndex
+
+        #[ ] 一次チャンクのコード書出し
+        CAL$WritePrimary
+
+        #[ ] 残りがない場合: if Unget = 0 goto 11
+        $AUnget LOD JZR11
+
+        #[ ] 残り部分のコード書出し
+        CAL$WriteRest
+
+:11     #[ ] サブルーチン部の書出し
+        CAL$WriteEpilogue
+        #[ ] 終了
+        EXT
+
+:12     #[ ] 空の場合、EXTのみ書出し
+        CAL$WriteEXT
+        #[ ] 終了
+        EXT
+
+##-------- 初期化
+
+## InitSystem: - -> -
+## システムの初期化。
+@define InitSystem 100
+:$InitSystem
+        # [ ]
+        $ATerm 0 STO
+        CAL$InitCTTable
+        RET
+
+## InitCTTable: - -> -
+## chartype テーブルの作成。CTTbl[ch] は ch が制御文字である/ない時に 1/0
+## をとる。ここで「制御文字」はコード -1～8、14～26、28～31 の文字。つまり
+## C0 Control のうち空白と ESC 以外。-1 は getchar の EOF で、EOF でこれを
+## 返す可能性を考慮して。
+@define InitCTTable 110
+:$InitCTTable
+
+        # [ ] char := -1
+        -1
+
+:111      # [char] CTTbl[char] := 1
+          DUP $ACTTbl ADD 1 STO
+          # [char] char += 1
+          1 ADD
+          # [char] if char = 9 goto 112
+          DUP 9 SUB JZR112
+          # [char] if char = 27 goto 113
+          DUP 27 SUB JZR113
+          # [char] if char < 32 goto 111
+          DUP 32 SUB JNG111
+
+       # [char]
+       POP
+       RET
+
+:112   # [char] char += 5
+       5 ADD
+       JMP111
+
+:113   # [char] char += 1
+       1 ADD
+       JMP111
+
+##-------- 一次チャンク読込み
+
+## ReadPrimary: - -> -
+## 端末からテキストを読み、最初の PCSiz 項目に収まる範囲を一次チャンクと
+## してそのサイズを Size に、情報を Text と RLen に収める。まだテキストに
+## 残りがある場合はその先頭を Unget に入れる。残りがない場合は Unget は
+## 0 である。
+@define ReadPrimary 200
+:$ReadPrimary
+
+        # [ ] Csr := -1; Prev := -1
+        $ACsr -1 STO $APrev -1 STO
+
+:201      # [ ]
+          CAL$ReadByte
+          # [char] if char = Prev goto 202
+          DUP $APrev LOD SUB JZR202
+
+            # [char] if char = 0 goto 203
+            DUP JZR203
+            # [char] Prev := char
+            DUP $APrev SWP STO
+            # [char] Csr += 1
+            $ACsr DUP LOD 1 ADD STO
+            # [char] if Csr = PCSiz goto 204
+            $ACsr LOD DUP $PCSiz SUB JZR204
+            # [char Csr] Text[Csr] := char
+            $AText ADD SWP STO
+            # [ ] RLen[Csr] := 1
+            $ACsr LOD $ARLen ADD 1 STO
+            # [ ] goto 201
+            JMP201
+
+:202        # [char]
+            POP
+            # [ ] RLen[Csr] += 1
+            $ACsr LOD $ARLen ADD DUP LOD 1 ADD STO
+            # [ ] goto 201
+            JMP201
+
+:203    # [char]
+        POP
+        # [ ] Size := Csr + 1
+        $ASize $ACsr LOD 1 ADD STO
+        # [ ]
+        RET
+
+:204    # [char Csr]
+        POP
+        # [char] Unget := char; Size := PCSiz
+        $AUnget SWP STO $ASize $PCSiz STO
+        # [ ]
+        RET
+
+## CountChar: - -> -
+@define CountChar 210
+:$CountChar
+
+        # CCod の作成
+        # [ ] idx := 0
+        0
+
+:211      # [idx] CCod[idx] := idx
+          DUP DUP $ACCod ADD SWP STO
+          # [idx] idx += 1
+          1 ADD
+          # [idx] if idx < 256 goto 211
+          DUP 256 SUB JNG211
+
+        # [idx]
+        POP
+
+        # CCnt の作成
+        # [ ] idx := 0
+        0
+
+:212      # [idx] if RLen[idx] = 1 goto 213
+          DUP $ARLen ADD LOD 1 SUB JZR213
+:213      # [idx]
+          DUP $AText ADD LOD $ACCnt ADD
+          # [idx &CCnt[Text[idx]]] CCnt[Text[idx]] += 1
+          DUP LOD 1 ADD STO
+          # [idx] idx += 1
+          1 ADD
+          # [idx] if idx < Size goto 212
+          DUP $ASize LOD SUB JNG212
+
+        # [idx]
+        POP
+        # [ ]
+        RET
+
+## SortCount: - -> -
+@define SortCount 220
+@define FirstGap 225
+:$SortCount
+
+        # [ ] G := FirstGap
+        $AG $FirstGap STO
+
+:221      # [ ] Ok := 1; j := G
+          $AOk 1 STO $AG LOD
+
+:222        # [j]
+            DUP DUP $AG LOD SUB $ACCnt ADD LOD
+            # [j j CCnt[j-G]] if CCnt[j-G] < CCnt[j] goto 223
+            SWP $ACCnt ADD LOD SUB JNG223
+            # [j] goto 224
+            JMP224
+
+:223          # [j] CCnt[j-G] と CCnt[j] を交換
+              DUP DUP $AG LOD SUB $ACCnt ADD SWP
+              # [j &CCnt[j-G] j]
+              DUP $ACCnt ADD LOD SWP
+              # [j &CCnt[j-G] CCnt[j] j]
+              DUP $ACCnt ADD SWP
+              # [j &CCnt[j-G] CCnt[j] &CCnt[j] j]
+              $AG LOD SUB $ACCnt ADD LOD
+              # [j &CCnt[j-G] CCnt[j] &CCnt[j] CCnt[j-G]]
+              # swap CCnt[j-G], CCnt[j]
+              STO STO
+
+              # [j] 上と同様に CCod[j-G] と CCod[j] を交換
+              DUP DUP $AG LOD SUB $ACCod ADD SWP
+              DUP $ACCod ADD LOD SWP
+              DUP $ACCod ADD SWP
+              $AG LOD SUB $ACCod ADD LOD
+              STO STO
+
+              # [j] Ok := 0
+              $AOk 0 STO
+
+:224        # [j] j += 1
+            1 ADD
+            # [j] if j < 256 goto 222
+            DUP 256 SUB JNG222
+
+          # [j] if G = 1 goto225
+          POP 1 $AG LOD SUB JZR225
+
+            # [ ] G := (G * 10) div 13
+            $AG DUP LOD 10 MUL 13 DIV STO
+            # [ ] goto 221
+            JMP221
+
+:225        # [ ] if Ok = 0 goto 221
+            $AOk JZR221
+
+        # [ ]
+        RET
+
+## MakeIndex: - -> -
+@define MakeIndex 230
+:$MakeIndex
+
+        # 最初に CIdx テーブルを全部 -1 で埋める
+        # [ ] h := 0
+        0
+:231      # [h] CIdx[h] := -1
+          DUP $ACIdx ADD -1 STO
+          # [h] h += 1
+          1 ADD
+          # [h] if h < 256 goto 231
+          DUP 256 SUB JNG231
+        # [h]
+        POP
+
+        # 常に J = lennum(Idx) である
+        # [ ] Idx := 0; J := 0; h := 0
+        $AIdx 0 STO $AJ 0 STO 0
+
+:232      # [h] K := CCnt[h]
+          DUP $ACCnt ADD LOD $AK SWP STO
+          # [h] if K < 2 goto 234
+          $AK LOD 2 SUB JNG234
+          # [h] In := CCod[h];
+          DUP $ACCod ADD LOD $AIn SWP STO
+
+          # コスト計算
+          # C1 = (lennum(In) + 8) * (K - 1)
+          # C2 = (J + 4) * K + (J + 7)
+          # (In = CCod[h], K = CCnt[h], J = lennum(Idx))
+
+          # [h] C1 を計算
+          $AIn LOD CAL$LenNum 8 ADD $AK LOD 1 SUB MUL
+          # [h C1] C2 を計算
+          $AJ LOD 4 ADD $AK LOD MUL $AJ LOD 7 ADD ADD
+          # [h C1 C2] if C1 < C2 goto 234
+          SUB JNG234
+
+:233      # [h] CIdx[In] := Idx
+          $AIn LOD $ACIdx ADD $AIdx LOD STO
+          # [h] Idx += 1
+          $AIdx DUP LOD 1 ADD STO
+          # [h] J := LenNum(Idx)
+          $AJ $AIdx LOD CAL$LenNum STO
+
+:234      # [h] h += 1
+          1 ADD
+          # [h] if h < 256 goto 232
+          DUP 256 SUB JNG232
+
+        # [h]
+        POP
+        # [ ]
+        RET
+
+##-------- WS コード書き出し
+
+## WritePrimary: - -> -
+@define WritePrimary 300
+:$WritePrimary
+
+        # [ ] Csr := 0
+        $ACsr 0 STO
+
+:301      # [ ]
+          $ACsr LOD DUP $AText ADD LOD SWP
+          # [Text[Csr] Csr]
+          $ARLen ADD LOD
+          # [Text[Csr] RLen[Csr]] if RLen[Csr] = 1 goto 302
+          DUP 1 SUB JZR302
+
+            # [ ] RLen[Csr] > 1 の場合は OUC を使う
+            CAL$WriteOUC
+            JMP304
+
+:302        # [ ] RLen[Csr] = 1 の場合
+            POP DUP $ACIdx ADD LOD
+            # [Text[Csr] CIdx[Text[Csr]]]
+            #   if CIdx[Text[Csr]] < 0 goto 303
+            DUP JNG303
+
+              # [Text[Csr] CIdx[Text[Csr]]]
+              SWP POP
+              # [CIdx[Text[Csr]]]
+              CAL$WriteCAL
+              JMP304
+
+:303          # [Text[Csr] CIdx[Text[Csr]]]
+              POP 1
+              # [Text[Csr] 1]
+              CAL$WriteOUC
+
+:304      # [ ] Csr += 1
+          $ACsr DUP LOD 1 ADD STO
+          # [ ] if Csr < Size goto 301
+          $ACsr LOD $ASize LOD SUB JNG301
+
+        # [ ]
+        RET
+
+## WriteRest: - -> -
+@define WriteRest 310
+:$WriteRest
+        # [ ] Prev := Unget
+        $APrev $AUnget LOD STO
+        # [ ] K := 1
+        $AK 1 STO
+
+:311      # [ ]
+          CAL$ReadByte
+
+:312      # [ char ] if char = Prev goto 316
+          DUP $APrev LOD SUB JZR316
+
+            # [ char ]
+            $APrev LOD $AK LOD
+            # [ char Prev K ] if K = 1 goto 313
+            DUP 1 SUB JZR313
+
+              # [ char Prev K ]
+              CAL$WriteOUC
+              # [ char ] goto 315
+              JMP315
+
+:313          # [ char Prev K ]
+              POP DUP $ACIdx ADD LOD
+              # [ char Prev CIdx[Prev] ] if CIdx[Prev] < 0 goto 314
+              DUP JNG314
+              # [ char Prev CIdx[Prev] ]
+              SWP POP
+              # [ char CIdx[Prev] ]
+              CAL$WriteCAL
+              # [ char ] goto 315
+              JMP315
+
+:314          # [ char Prev CIdx[Prev] ]
+              POP 1
+              # [ char Prev 1 ]
+              CAL$WriteOUC
+
+:315        # [ char ] if char = 0 goto 317
+            DUP JZR317
+            # [ char ] Prev := char; K := 1
+            $APrev SWP STO $AK 1 STO
+            # [ ]
+            JMP311
+
+:316        # [ char ]
+            POP
+            # [ ]
+            $AK DUP LOD 1 ADD STO
+
+          # [ ]
+          JMP311
+
+        # [ char ]
+        POP
+        # [ ]
+        RET
+
+## WriteEpilogue: - -> -
+@define WriteEpilogue 320
+:$WriteEpilogue
+
+        # [ ] EXT を書き出す
+        CAL$WriteEXT
+        # [ ] char := 0
+        0
+
+:321      # [char]
+          DUP DUP $ACIdx ADD LOD
+          # [char char CIdx[char]] if CIdx[char] < 0 goto 322
+          DUP JNG322
+
+            # [char char CIdx[char]] 文字 char に対するサブルーチン
+            CAL$WriteSubroutine
+            # [char] goto 323
+            JMP323
+
+:322        # [char char CIdx[char]]
+            POP POP
+
+:323      # [char] char += 1
+          1 ADD
+          # [char] if char < 256  goto 321
+          DUP 256 SUB JNG321
+        
+        # [char]
+        POP
+        # [ ]
+        RET
+
+##-------- 入出力関係
+
+## ReadByte: - -> char
+## 端末から 1 バイト読み char とする。ただし char が制御文字の場合は
+## char として 0 を返す。
+@define ReadByte 400
+:$ReadByte
+        # [ ] read In  (char = In)
+        $AIn INC $AIn LOD
+        # [char] if CTTbl[char] = 0 goto 401
+        DUP $ACTTbl ADD LOD JZR401
+        # [char] char := 0
+        POP 0
+:401    # [char]
+        RET
+
+## WriteString: val+ -> -
+## スタックトップの値をとり、それが 0/1/2 であれば空白/タブ/改行を書き出す。
+## これを 0～2 以外の値が出るまで繰り返す。(結局、出力文字数 + 1 個の値が
+## 取り除かれる。)
+@define WriteString 410
+:$WriteString
+
+        # [ ... val ]
+        DUP JZR411
+        DUP 1 SUB JZR412
+        DUP 2 SUB JZR413
+        JMP414
+
+:411    POP $CSp OUC
+        JMP410
+:412    POP $CTb OUC
+        JMP410
+:413    POP $CLf OUC
+        JMP410
+
+:414    POP
+        RET
+
+## WriteOUC: char count -> -
+## 文字 char を count 回出力する WS コードを書き出す
+@define WriteOUC 420
+:$WriteOUC
+        # PSH(char) { DUP OUC }x(count-1) OUC
+        # SsSccccccl(SlsTlss)*Tlss
+
+        # [char count] K := count
+        $AK SWP STO
+
+        # [char] "SsSccccccl" の部分
+        -1 SWP
+        CAL$ToString
+        0 0 0
+        CAL$WriteString
+
+        # "SlsTlss" の繰り返し
+        # [ ] count := K
+        $AK LOD
+        # [count]
+        JMP422
+:421      # [count] "SlsTlss" を出力
+          -1 0 0 2 1 0 2 0
+          CAL$WriteString
+          # [count] count -= 1
+          1 SUB
+:422      # [count] if count > 1 goto 421
+          DUP 1 SWP SUB JNG421
+        # [count]
+        POP
+
+        # [ ] "tlss" の部分
+        -1 0 0 2 1
+        CAL$WriteString
+
+        # [ ]
+        RET
+
+## WriteCAL: label -> -
+## ラベル label のコールをする WS コードを書き出す
+@define WriteCAL 430
+:$WriteCAL
+        # CAL(label)
+        # LstAaaaaal
+
+        # [label]
+        -1 SWP
+        CAL$ToString
+        1 0 2
+        CAL$WriteString
+        RET
+
+## WriteSubroutine: char label -> -
+## サブルーチンの WS コードの書き出し。
+@define WriteSubroutine 440
+:$WriteSubroutine
+        # LBL(label) PSH(char) OUC RET
+        # LssAaaaaalSsScccccclTlssLtl
+
+        # [char label] "LssAaaaaal" の部分
+        -1 SWP
+        CAL$ToString
+        0 0 2
+        CAL$WriteString
+
+        # [char] "SsSccccccl" の部分
+        -1 SWP
+        CAL$ToString
+        0 0 0
+        CAL$WriteString
+
+        # [ ] "TlssLtl" の部分
+        -1 2 1 2 0 0 2 1
+        CAL$WriteString
+        RET
+
+## WriteEXT: - -> -
+## EXT コードの書き出し。
+@define WriteEXT 450
+:$WriteEXT
+
+        # [ ] EXT = Lll
+        -1 2 2 2
+        CAL$WriteString
+        RET
+
+##-------- その他
+
+## ToString: n -> val
+## 数値 n を WS コードでの表現(ただし符号バイトを欠く)に変換し、それを
+## WriteString の規約の形(0～2 の列)でスタックに置く。
+@define ToString 500
+:$ToString
+
+        # [n]
+        2 SWP
+
+:501      # [2 ... n]
+          DUP JZR502
+          DUP 2 MOD SWP
+          2 DIV
+          JMP501
+
+:502    # [2 ... n]
+        POP
+        RET
+
+## LenNum: n -> length
+## 数値 n をビット長(WS コードではバイト長)を length に返す。
+@define LenNum 510
+:$LenNum
+        # [n]
+        DUP 128 SUB JNG511
+        POP 8
+        RET
+:511    DUP 64 SUB JNG512
+        POP 7
+        RET
+:512    DUP 32 SUB JNG513
+        POP 6
+        RET
+:513    DUP 16 SUB JNG514
+        POP 5
+        RET
+:514    DUP 8 SUB JNG515
+        POP 4
+        RET
+:515    DUP 4 SUB JNG516
+        POP 3
+        RET
+:516    DUP 2 SUB JNG517
+        POP 2
+        # n < 2 なら LenNum(n) = n
+:517    RET
+
+## EOF
